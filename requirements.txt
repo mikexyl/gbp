@@ -1,0 +1,8 @@
+numpy~=1.24.3
+scipy~=1.10.1
+gbp~=5670a49
+trimesh~=4.2.4
+pyglet~=1.5.28
+matplotlib~=3.7.2
+pygame~=2.5.2
+setuptools~=68.2.2
