@@ -4,3 +4,7 @@ __pycache__/
 ndbp.py
 .idea
 gbp.egg-info
+
+__pycache__:
+.idea/
+
