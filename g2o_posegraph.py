@@ -10,7 +10,8 @@ import numpy as np
 import argparse
 from matplotlib import animation, pyplot as plt
 from gbp import gbp_g2o
-
+from gbp import gbp
+from gbp.factors import liegroup_displacement
 
 np.random.seed(0)
 
@@ -50,7 +51,8 @@ parser.add_argument("--final_prior_std_weaker_factor", type=float, default=100.,
                          "after the priors are weakened (for floats implementation).")
 parser.add_argument("--num_weakening_steps", type=int, default=5,
                     help="Number of steps over which the priors are weakened (for floats implementation)")
-
+parser.add_argument("--prior", type=int, choices=[0, 1], default=0,
+                    help="Add prior to the graph")
 
 
 args = parser.parse_args()
@@ -73,7 +75,29 @@ if args.float_implementation:
 
 graph = gbp_g2o.create_g2o_graph(args.g2o_file, configs)
 
-graph.generate_priors_var(weaker_factor=args.prior_std_weaker_factor)
+if args.prior:
+    print("add prior")
+    const_node = gbp.ConstantVariableNode(9999, 6)
+    const_node.prior.eta = np.zeros(6)
+    const_node.prior.lam = np.eye(6) * 1e-6
+    graph.var_nodes.append(const_node)
+
+    prior_factor = gbp.Factor(
+        9999,
+        [graph.var_nodes[-1], graph.var_nodes[0]],
+        np.zeros(6),
+        np.ones(6) * 1e-6,
+        liegroup_displacement.meas_fn,
+        liegroup_displacement.jac_fn,
+        loss=None,
+        mahalanobis_threshold=2,
+    )
+
+    graph.var_nodes[-1].adj_factors.append(prior_factor)
+    graph.var_nodes[0].adj_factors.append(prior_factor)
+    graph.factors.append(prior_factor)
+
+# graph.generate_priors_var(weaker_factor=args.prior_std_weaker_factor)
 graph.update_all_beliefs()
 
 fig = plt.figure()
