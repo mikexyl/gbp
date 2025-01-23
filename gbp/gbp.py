@@ -271,7 +271,13 @@ class ConstantVariableNode(VariableNode):
 
     # override update_belief method to be empty
     def update_belief(self):
-        super().update_belief()
+        for factor in self.adj_factors:
+            belief_ix = factor.adj_vIDs.index(self.variableID)
+            factor.adj_beliefs[belief_ix].eta, factor.adj_beliefs[belief_ix].lam = (
+                self.prior.eta,
+                self.prior.lam,
+            )
+
         self.belief.eta = self.prior.eta.copy()
         self.belief.lam = self.prior.lam.copy()
 
