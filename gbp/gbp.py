@@ -179,8 +179,10 @@ class VariableNode:
             Then send belief to adjacent factor nodes.
         """
         # Update local belief
-        eta = self.prior.eta.copy()
-        lam = self.prior.lam.copy()
+        # eta=self.prior.eta.copy()
+        # lam=self.prior.lam.copy()
+        eta = np.zeros(self.dofs)
+        lam = np.eye(self.dofs)*1e-5
         for factor in self.adj_factors:
             message_ix = factor.adj_vIDs.index(self.variableID)
             eta_inward, lam_inward = factor.messages[message_ix].eta, factor.messages[message_ix].lam
@@ -197,7 +199,17 @@ class VariableNode:
             belief_ix = factor.adj_vIDs.index(self.variableID)
             factor.adj_beliefs[belief_ix].eta, factor.adj_beliefs[belief_ix].lam = self.belief.eta, self.belief.lam
 
-
+class ConstantVariableNode(VariableNode):
+    # inherit init from VariableNode
+    def __init__(self, variable_id, dofs):
+        super().__init__(variable_id, dofs)
+    
+    # override update_belief method to be empty
+    def update_belief(self):
+        super().update_belief()
+        self.belief.eta = self.prior.eta.copy()
+        self.belief.lam = self.prior.lam.copy()
+    
 class Factor:
     def __init__(self,
                  factor_id,
