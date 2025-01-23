@@ -106,6 +106,8 @@ def create_g2o_graph(g2o_file, configs):
         new_pose_node = FrameVariableNode(variable_id, 6, m)
         # (x, y, z, qw, qx, qy, qz) -> vector6d
         new_pose_node.mu = np.random.rand(6)
+        new_pose_node.belief.eta=np.zeros(6)
+        new_pose_node.belief.lam=np.eye(6) 
         graph.pose_nodes.append(new_pose_node)
         variable_id += 1
     print(f'variable_id: graph.pose_nodes[i].variable_id for i in range(n_poses): {[graph.pose_nodes[i].variableID for i in range(n_poses)]}')

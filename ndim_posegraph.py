@@ -54,6 +54,14 @@ parser.add_argument(
     help="Use priors on variable nodes (0 or 1)",
 )
 
+parser.add_argument(
+    "--contract",
+    type=int,
+    choices=[0, 1],
+    default=0,
+    help="Use contraction on variable nodes (0 or 1)",
+)
+
 args = parser.parse_args()
 print("Configs: \n", args)
 
@@ -98,7 +106,7 @@ graph = gbp.FactorGraph(nonlinear_factors=False)
 
 # Initialize variable nodes for frames with prior
 for i in range(args.n_varnodes):
-    new_var_node = gbp.VariableNode(i, args.dim)
+    new_var_node = gbp.VariableNode(i, args.dim, contraction=args.contract)
     # new_var_node.prior.eta = priors_eta[i]
     # new_var_node.prior.lam = priors_lambda[i]
     graph.var_nodes.append(new_var_node)
@@ -112,7 +120,7 @@ for f, measurement in enumerate(noisy_measurements):
             graph.var_nodes[measurements_nodeIDs[f][1]],
         ],
         measurement,
-        args.gauss_noise_std,
+        args.gauss_noise_std * np.ones(args.dim),
         linear_displacement.meas_fn,
         linear_displacement.jac_fn,
         loss=None,
@@ -125,16 +133,17 @@ for f, measurement in enumerate(noisy_measurements):
 
 if args.prior:
     print("add prior")
-    const_node = gbp.ConstantVariableNode(i + 1, args.dim)
+    const_node = gbp.ConstantVariableNode(i + 1, args.dim, contraction=args.contract)
     const_node.prior.eta = np.zeros(args.dim)
     const_node.prior.lam = np.eye(args.dim) * 1e-6
+    const_node.belief = copy.deepcopy(const_node.prior)
     graph.var_nodes.append(const_node)
 
     prior_factor = gbp.Factor(
         f + 1,
         [graph.var_nodes[-1], graph.var_nodes[0]],
         np.zeros(args.dim),
-        args.gauss_noise_std / 100.0,
+        args.gauss_noise_std * np.ones(args.dim) * 0.1,
         linear_displacement.meas_fn,
         linear_displacement.jac_fn,
         loss=None,
@@ -162,12 +171,9 @@ print(f"Number of variable nodes {graph.n_var_nodes}")
 print(f"Number of edges per variable node {args.M}")
 print(f"Number of dofs at each variable node {args.dim}\n")
 
-mu, sigma = graph.joint_distribution_cov()  # Get batch solution
 
 energy = graph.energy()
-distance = np.linalg.norm(graph.get_means() - mu)
 energy_data.append(energy)
-distance_data.append(distance)
 
 # Assuming graph, mu, priors_mu, and args are already defined
 fig = plt.figure()
@@ -179,10 +185,8 @@ fig2, (ax2, ax3) = plt.subplots(2, 1)
 def update(frame):
     graph.synchronous_iteration()
     energy = graph.energy()
-    distance = np.linalg.norm(graph.get_means() - mu)
-    print("Iteration: ", frame, "Energy: ", energy, "Distance: ", distance)
+    print("Iteration: ", frame, "Energy: ", energy)
     energy_data.append(energy)
-    distance_data.append(distance)
     mu_est = []
     for var in graph.var_nodes:
         mu_est.append(var.belief.mu)
@@ -211,11 +215,6 @@ def update(frame):
     ax2.clear()
     ax2.plot(energy_data, label="Energy")
     ax2.legend()
-
-    ax3.clear()
-    ax3.plot(distance_data, label="Distance")
-    ax3.legend()
-
 
 ani = FuncAnimation(fig, update, frames=range(args.n_iters), repeat=False)
 ani2 = FuncAnimation(fig2, update, frames=range(args.n_iters), repeat=False)

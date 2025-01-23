@@ -6,8 +6,132 @@ import numpy as np
 import scipy.linalg
 from utils import transformations
 import quaternion
+import copy
 
 from utils.gaussian import NdimGaussian
+
+
+def dz(z1: NdimGaussian, z2: NdimGaussian):  # z1 - z2
+    mu1 = np.linalg.inv(z1.lam) @ z1.eta
+    mu2 = np.linalg.inv(z2.lam) @ z2.eta
+    Sigma1 = np.linalg.inv(z1.lam)
+    Sigma2 = np.linalg.inv(z2.lam)
+
+    dmu = mu1 - mu2
+    dSigma = Sigma1
+    dlambda = np.linalg.inv(dSigma)
+    deta = dlambda @ dmu
+    return NdimGaussian(dmu.shape[0], deta, dlambda)
+
+
+def kl_divergence_gaussian(p: NdimGaussian, q: NdimGaussian) -> float:
+    """
+    Compute the Kullback-Leibler divergence between two NdimGaussian distributions.
+
+    Parameters:
+    p (NdimGaussian): The first Gaussian distribution.
+    q (NdimGaussian): The second Gaussian distribution.
+
+    Returns:
+    float: The KL divergence between p and q.
+    """
+    assert p.dim == q.dim
+    mu1 = p.mu
+    mu2 = q.mu
+    cov1 = p.sigma
+    cov2 = q.sigma
+
+    k = p.dim
+
+    cov2_inv = np.linalg.inv(cov2)
+    cov1_inv = np.linalg.inv(cov1)  
+    det_cov1 = np.linalg.det(cov1)
+    det_cov2 = np.linalg.det(cov2)
+
+    trace = np.trace(cov2_inv @ cov1)
+
+    diff = mu2 - mu1
+    quadratic_term = diff.T @ cov2_inv @ diff
+
+    log_det_term = np.log(det_cov2 / det_cov1)
+
+    kl = 0.5 * (trace + quadratic_term - k + log_det_term)
+
+    if kl < 0:
+        print("mu1", mu1)
+        print("mu2", mu2)
+        print("cov1", cov1)
+        print("cov2", cov2)
+        print("k", k)
+        raise ValueError(f"KL divergence is negative: {kl}")
+
+    return kl
+
+
+def contraction(d_last, z1: NdimGaussian, z2: NdimGaussian) -> NdimGaussian:
+    _lambda = 1.0
+
+    # compute new lambda
+    d_current = kl_divergence_gaussian(z1, z2)
+    print(d_current)
+    # print(d_current)
+    if d_current < 1e-6:
+        return z2, d_last, 0, d_current
+
+    _dz = dz(z2, z1)
+
+    alpha = 0.9
+    d_reset = 10  # chi2*2
+    d_target = alpha * d_last
+    print("target ", d_target)
+    if d_current <= d_target or d_current > d_reset:
+        d_last = d_current
+        print("already contract")
+        return z2, d_current, 0, d_current
+
+    Sigma1 = np.linalg.inv(z1.lam)
+    Sigmad = np.linalg.inv(_dz.lam)
+    mu1 = np.linalg.inv(z1.lam) @ z1.eta
+    dmu = np.linalg.inv(_dz.lam) @ _dz.eta
+
+    diff = np.transpose(dmu) @ np.linalg.inv(Sigma1) @ dmu
+    tr = np.trace(np.linalg.inv(Sigma1) @ Sigmad)
+    denom = tr + diff
+
+    if denom < 1e-6:
+        _lambda = 1
+    else:
+        _lambda = np.sqrt(2 * d_target / denom)
+
+    _lambda = np.min([_lambda, 1])
+
+    new_Sigma = Sigma1 + Sigmad * _lambda * _lambda
+    new_lambda = np.linalg.inv(new_Sigma)
+    new_mu = mu1 + _lambda * dmu
+    new_eta = new_lambda @ new_mu
+    return (
+        NdimGaussian(new_mu.shape[0], new_eta, new_lambda),
+        d_target,
+        _lambda,
+        d_current,
+    )
+
+
+def contract_sigma(d_last, sigma1, sigma2):
+    _lambda = 1.0
+
+    d_current = np.linalg.norm(sigma2 - sigma1)
+    if d_current < 1e-6:
+        return sigma2, d_last, 0, dsigma
+
+    d_target = 0.9 * d_last
+    if d_current <= d_target:
+        d_last = d_current
+        return sigma2, d_current, 0, d_current
+
+    _lambda = d_target / d_current
+    new_sigma = sigma1 + (sigma2 - sigma1) * _lambda
+    return new_sigma, d_target, 0, d_current
 
 
 class FactorGraph:
@@ -195,7 +319,7 @@ class FactorGraph:
                 q = quaternion.from_rotation_vector(measurement_vec[3:])
                 # save xyz and quaternion
                 file.write(" ".join([str(x) for x in measurement_vec[:3]]) + " ")
-                file.write(" ".join([str(x) for x in q.components]) + " ")
+                file.write(" ".join([str(q.x), str(q.y), str(q.z), str(q.w)]) + " ")
                 # expand factor.gauss_noise_var to matrix
                 sigma = np.diag(1.0 / (factor.gauss_noise_var))
                 info = np.linalg.inv(sigma)
@@ -212,7 +336,7 @@ class FactorGraph:
 
 
 class VariableNode:
-    def __init__(self, variable_id, dofs):
+    def __init__(self, variable_id, dofs, **kwargs):
 
         self.variableID = variable_id
         self.adj_factors = []
@@ -222,6 +346,8 @@ class VariableNode:
         self.Sigma = np.zeros([dofs, dofs])
 
         self.belief = NdimGaussian(dofs)
+        self.belief.eta = np.zeros(dofs)
+        self.belief.lam = np.eye(dofs)
 
         self.prior = NdimGaussian(dofs)
         self.prior_lambda_end = (
@@ -230,6 +356,9 @@ class VariableNode:
         self.prior_lambda_logdiff = -1
 
         self.dofs = dofs
+        self.d_last = np.inf
+        self.d_sigma = np.inf
+        self.contraction = kwargs.get("contraction", True)
 
     def update_belief(self):
         """
@@ -240,8 +369,8 @@ class VariableNode:
         # eta=self.prior.eta.copy()
         # lam=self.prior.lam.copy()
         eta = np.zeros(self.dofs)
-        lam = np.eye(self.dofs) * 1e-5
-        for factor in self.adj_factors:
+        lam = np.eye(self.dofs) 
+        for i, factor in enumerate(self.adj_factors):
             message_ix = factor.adj_vIDs.index(self.variableID)
             eta_inward, lam_inward = (
                 factor.messages[message_ix].eta,
@@ -250,18 +379,60 @@ class VariableNode:
             eta += eta_inward
             lam += lam_inward
 
-        self.belief.eta = eta
-        self.belief.lam = lam
-        self.Sigma = np.linalg.inv(self.belief.lam)
-        self.mu = self.Sigma @ self.belief.eta
+            if np.any(np.diag(lam_inward) < 0):
+                print(f"variable {self.variableID} lam_inward: {lam_inward}")
+                raise ValueError("lam_inward has negative diagonal elements")
+                sys.exit(1)
+
+        # if np.any(np.linalg.eigvals(lam) < 0):
+        #     print(f"variable {self.variableID} new_belief.lam: {lam}")
+        #     raise ValueError("message lam not invertable")
+        #     sys.exit(1)
+
+        new_belief = NdimGaussian(self.dofs, eta, lam)
 
         # Send belief to adjacent factors
         for factor in self.adj_factors:
             belief_ix = factor.adj_vIDs.index(self.variableID)
             factor.adj_beliefs[belief_ix].eta, factor.adj_beliefs[belief_ix].lam = (
-                self.belief.eta,
-                self.belief.lam,
+                new_belief.eta,
+                new_belief.lam,
             )
+        if self.contraction:
+            # check if current belief is valid by checking if self.belief.lam invertable
+            old_belief = None
+            if np.linalg.det(self.belief.lam) == 0:
+                old_belief = NdimGaussian(
+                    self.dofs, np.zeros(self.dofs), np.eye(self.dofs)
+                )
+            else:
+                old_belief = copy.deepcopy(self.belief)
+
+            # new_sigma, self.d_sigma, _lambda, d_current = contract_sigma(
+            #     self.d_sigma,
+            #     np.linalg.inv(old_belief.lam),
+            #     np.linalg.inv(new_belief.lam),
+            # )
+            # new_belief.lam = np.linalg.inv(new_sigma)
+            new_belief, self.d_last, _lambda, d_current = contraction(
+                self.d_last, old_belief, new_belief
+            )
+            lam_norm = np.linalg.norm(old_belief.lam)
+            print(
+                f"variable {self.variableID} lambda: {_lambda}, d_current: {d_current}, d_target: {self.d_last}, lam: {lam_norm}"
+            )
+
+        if np.any(np.linalg.eigvals(new_belief.lam) < 0):
+            print(f"variable {self.variableID} new_belief.lam: {new_belief.lam}")
+            raise ValueError("new_belief.lam has negative diagonal elements")
+            sys.exit(1)
+
+        self.belief.eta = new_belief.eta.copy()
+        self.belief.lam = new_belief.lam.copy()
+        self.Sigma = np.linalg.inv(self.belief.lam)
+        self.mu = self.Sigma @ self.belief.eta
+
+
 
 
 class ConstantVariableNode(VariableNode):
@@ -343,6 +514,7 @@ class Factor:
             adj_belief_means = np.concatenate(
                 (adj_belief_means, np.linalg.inv(belief.lam) @ belief.eta)
             )
+            assert np.all(np.linalg.eigvals(belief.lam) > 0)
         d = self.meas_fn(adj_belief_means, *self.args) - self.measurement
         return d
 
@@ -531,3 +703,12 @@ class Factor:
         for v in range(len(self.adj_vIDs)):
             self.messages[v].lam = messages_lam[v]
             self.messages[v].eta = messages_eta[v]
+
+            if np.any(np.linalg.eigvals(self.messages[v].lam) < 0):
+                print(f"factor {self.factorID} message {v} lam: {self.messages[v].lam}")
+
+                for belief in self.adj_beliefs:
+                    print(f"belief {belief.lam}")
+
+                raise ValueError("computed lam not invertable")
+                sys.exit(1)
