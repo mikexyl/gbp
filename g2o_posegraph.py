@@ -16,7 +16,7 @@ np.random.seed(0)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--g2o_file", default="data/smallGrid3D.g2o",
+parser.add_argument("--g2o_file", default="data/tinyGrid3D.g2o",
                     help="g2o style file with POSE3 data")
 
 parser.add_argument("--n_iters", type=int, default=50,
@@ -76,62 +76,16 @@ graph = gbp_g2o.create_g2o_graph(args.g2o_file, configs)
 graph.generate_priors_var(weaker_factor=args.prior_std_weaker_factor)
 graph.update_all_beliefs()
 
-# for i in range(args.n_iters):
-#     # To copy weakening of strong priors as must be done on IPU with float
-#     if args.float_implementation and (i+1) % 2 == 0 and (i < args.num_weakening_steps * 2):
-#         print('Weakening priors')
-#         graph.weaken_priors(weakening_factor)
-
-#     # At the start, allow a larger number of iterations before linearising
-#     if i == 3 or i == 8:
-#         for factor in graph.factors:
-#             factor.iters_since_relin = 1
-
-#     # are = graph.are()
-#     energy = graph.energy()
-#     print(f'Iteration {i} // Energy {energy}')
-#     n_factor_relins = 0
-#     for factor in graph.factors:
-#         if factor.iters_since_relin == 0:
-#             n_factor_relins += 1
-#     # print(f'Iteration {i} // Energy {energy:.4f} // Num factors relinearising {n_factor_relins}')
-
-#     # viewer.update(graph)
-
-#     graph.synchronous_iteration(robustify=True, local_relin=True)
-
-
 fig = plt.figure()
 ax = fig.add_subplot(211, projection='3d')
 energy_ax = fig.add_subplot(212)
-def init():
-    """Initialize the plot."""
-    ax.clear()
-    pass
 
 def update(frame):
     ax.clear()
 
-    if args.float_implementation and (frame+1) % 2 == 0 and (frame < args.num_weakening_steps * 2):
-        print('Weakening priors')
-        graph.weaken_priors(weakening_factor)
-
-    # At the start, allow a larger number of iterations before linearising
-    if frame == 3 or frame == 8:
-        for factor in graph.factors:
-            factor.iters_since_relin = 1
-
-    # are = graph.are()
     energy = graph.energy()
     print(f'Iteration {frame} // Energy {energy}')
-    n_factor_relins = 0
-    for factor in graph.factors:
-        if factor.iters_since_relin == 0:
-            n_factor_relins += 1
-    # print(f'Iteration {i} // Energy {energy:.4f} // Num factors relinearising {n_factor_relins}')
 
-    # viewer.update(graph)
-    # plot belief_mu as red dots
     for var_node in graph.var_nodes:
         ax.scatter(var_node.belief.mu[0], var_node.belief.mu[1], var_node.belief.mu[2], c='r', marker='o')
         ax.text(var_node.belief.mu[0], var_node.belief.mu[1], var_node.belief.mu[2], 
@@ -139,7 +93,11 @@ def update(frame):
     
     graph.synchronous_iteration(robustify=True, local_relin=True)
 
-ani = animation.FuncAnimation(fig, update, frames=args.n_iters, init_func=init, blit=False, repeat=False)
+    graph.save_to_g2o('data/optimized.g2o')
+
+ani = animation.FuncAnimation(fig, update, frames=args.n_iters, repeat=False)
+
+# save to g2o
 
 # Save the animation as a video file
 # ani.save('posegraph_contraction.mp4', writer='ffmpeg', fps=1)

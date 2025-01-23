@@ -86,8 +86,6 @@ def create_g2o_graph(g2o_file, configs):
     n_poses, n_edges, measurements, poses_ID1s, poses_ID2s, infos = read_g2ofile.read_g2ofile(g2o_file)
     print(f'Number of poses: {n_poses}')
     print(f'Number of edges: {n_edges}')
-    print(f'pose_ID1s: {poses_ID1s}')
-    print(f'pose_ID2s: {poses_ID2s}')
     
     graph = G2OFactorGraph(eta_damping=configs['eta_damping'],
                           beta=configs['beta'],
@@ -101,8 +99,6 @@ def create_g2o_graph(g2o_file, configs):
     poses_IDs = []
     [poses_IDs.append(id) for id in (poses_ID1s + poses_ID2s) if id not in poses_IDs]
 
-    print(f'pose_IDs: {poses_IDs}')
-    
     priors_mu = np.random.rand(n_poses, 6)  # grid goes from 0 to 10 along x and y axis
     prior_sigma = 3 * np.eye(6)
 
