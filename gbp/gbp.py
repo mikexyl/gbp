@@ -40,7 +40,8 @@ class FactorGraph:
         energy = 0
         for factor in self.factors:
             # Variance of Gaussian noise at each factor is weighting of each term in squared loss.
-            energy += 0.5 * np.linalg.norm(factor.compute_residual()) ** 2 / factor.adaptive_gauss_noise_var
+            # energy += 0.5 * np.linalg.norm(factor.compute_residual()) ** 2 / factor.adaptive_gauss_noise_var
+            energy += factor.energy()
         return energy
 
     def compute_all_messages(self, local_relin=True):
@@ -274,7 +275,14 @@ class Factor:
         """
             Computes the squared error using the appropriate loss function.
         """
-        return 0.5 * np.linalg.norm(self.compute_residual()) ** 2 / self.adaptive_gauss_noise_var
+        if isinstance(self.adaptive_gauss_noise_var, float):
+            return 0.5 * np.linalg.norm(self.compute_residual()) ** 2 / self.adaptive_gauss_noise_var
+        else:
+            r = self.compute_residual()
+            # self.adaptive_gauss_noise_var is a vector of variances for each dimension of the residual
+            assert r.shape[0] == len(self.adaptive_gauss_noise_var)
+            info = np.diag(1 / self.adaptive_gauss_noise_var)
+            return 0.5 * r.T @ np.diag(1 / self.adaptive_gauss_noise_var) @ r
 
     def compute_factor(self, linpoint=None, update_self=True):
         """
@@ -339,9 +347,12 @@ class Factor:
                     self.robust_flag = False
                     self.adaptive_gauss_noise_var = self.gauss_noise_var
 
-        # Update factor using existing linearisation point (we are not relinearising).
-        self.factor.eta *= old_adaptive_gauss_noise_var / self.adaptive_gauss_noise_var
-        self.factor.lam *= old_adaptive_gauss_noise_var / self.adaptive_gauss_noise_var
+        scale_factor = old_adaptive_gauss_noise_var / self.adaptive_gauss_noise_var
+        if not isinstance(scale_factor, float):
+            assert(len(scale_factor) == len(self.factor.eta) // 2)  # If scale_factor is half the size of eta
+            scale_factor = np.hstack([scale_factor, scale_factor])  # Duplicate for both poses
+        self.factor.eta *= scale_factor
+        self.factor.lam *= scale_factor
 
     def compute_messages(self, eta_damping):
         """
