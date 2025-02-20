@@ -3,6 +3,7 @@
     Also defines the function to create the factor graph.
 """
 
+import copy
 import numpy as np
 from gbp import gbp, gbp_g2o
 from gbp.factors import liegroup_displacement
@@ -14,7 +15,11 @@ class G2OFactorGraph(gbp.FactorGraph):
         gbp.FactorGraph.__init__(self, nonlinear_factors=True, **kwargs)
 
         self.pose_nodes = []
-        self.var_nodes = self.pose_nodes
+        self.const_nodes = []
+        self.var_nodes = self.pose_nodes + self.const_nodes
+
+    def init_nodes(self):
+        self.var_nodes = self.pose_nodes + self.const_nodes
 
     def generate_priors_var(self, weaker_factor=100):
         """
@@ -57,12 +62,13 @@ class G2OFactorGraph(gbp.FactorGraph):
                 residuals += list(factor.compute_residual())
         return residuals
 
-
-
 class FrameVariableNode(gbp.VariableNode):
-    def __init__(self, variable_id, dofs, c_id=None):
+
+    def __init__(self, variable_id, dofs, contraction=False, c_id=None):
         gbp.VariableNode.__init__(self, variable_id, dofs)
         self.c_id = c_id
+        self.contraction = contraction
+
 
 class BetweenFactor(gbp.Factor):
     def __init__(self, factor_id, adj_var_nodes, measurement, gauss_noise_std, loss, Nstds):
@@ -79,14 +85,17 @@ class BetweenFactor(gbp.Factor):
 
 def create_g2o_graph(g2o_file, configs):
     """
-        Create graph object from bal style file.
+    Create graph object from g2o style file.
     """
 
     # read from g2o file
-    n_poses, n_edges, measurements, poses_ID1s, poses_ID2s, infos = read_g2ofile.read_g2ofile(g2o_file)
+    n_poses, n_edges, initials, measurements, poses_ID1s, poses_ID2s, infos = (
+        read_g2ofile.read_g2ofile(g2o_file)
+    )
     print(f'Number of poses: {n_poses}')
     print(f'Number of edges: {n_edges}')
-    
+    print(f'Add prior? {configs["prior"]}')
+
     graph = G2OFactorGraph(eta_damping=configs['eta_damping'],
                           beta=configs['beta'],
                           num_undamped_iters=configs['num_undamped_iters'],
@@ -103,21 +112,32 @@ def create_g2o_graph(g2o_file, configs):
     prior_sigma = 3 * np.eye(6)
 
     for m in enumerate(poses_IDs):
-        new_pose_node = FrameVariableNode(variable_id, 6, m)
-        # (x, y, z, qw, qx, qy, qz) -> vector6d
+        new_pose_node = FrameVariableNode(variable_id, 6, configs["contraction"], m)
+        # (x, y, z, qx, qy, qz, qw) -> vector6d
         new_pose_node.mu = np.random.rand(6)
-        new_pose_node.belief.eta=np.zeros(6)
-        new_pose_node.belief.lam=np.eye(6) 
         graph.pose_nodes.append(new_pose_node)
         variable_id += 1
-    print(f'variable_id: graph.pose_nodes[i].variable_id for i in range(n_poses): {[graph.pose_nodes[i].variableID for i in range(n_poses)]}')
+
+    if configs["prior"]:
+        print("Setting priors")
+        new_pose_node = gbp.ConstantVariableNode(variable_id, 6)
+        new_pose_node.mu = np.zeros(6)
+        new_pose_node.Sigma = np.eye(6) / 100
+        new_pose_node.prior.lam = np.eye(6) * 100
+        new_pose_node.prior.eta = np.zeros(6)
+        new_pose_node.belief.lam = np.eye(6) * 100
+        new_pose_node.belief.eta = np.zeros(6)
+        graph.const_nodes.append(new_pose_node)
+        variable_id += 1
 
     for f, measurement in enumerate(measurements):
         pose_node1 = graph.pose_nodes[poses_ID1s[f]]
         pose_node2 = graph.pose_nodes[poses_ID2s[f]]
         info = infos[f]
         cov = np.linalg.inv(info)
+        # print(f'measurement: {measurement}')
         # convert measurement to lie algebra
+        # q = measurement[3:7]) # qw qx qy qz
         R = transformations.Quaternion(q=measurement[3:7]).rot_matrix()
         t = measurement[:3]
         T = np.eye(4)
@@ -139,11 +159,32 @@ def create_g2o_graph(g2o_file, configs):
         factor_id += 1
         n_edges += 1
 
+    if configs["prior"] == "1":
+        new_factor = BetweenFactor(
+            factor_id,
+            [graph.pose_nodes[-1], graph.const_nodes[0]],
+            np.zeros(6),
+            np.array([0.02, 0.02, 0.02, 0.01, 0.01, 0.01]),
+            configs["loss"],
+            configs["Nstds"],
+        )
+
+        linpoint = np.concatenate((graph.pose_nodes[-1].mu, graph.const_nodes[0].mu))
+        print(
+            f"factor_id: {factor_id} - N{graph.pose_nodes[-1].variableID} - N{graph.const_nodes[0].variableID}"
+        )
+        new_factor.compute_factor(linpoint)
+        graph.pose_nodes[-1].adj_factors.append(new_factor)
+        graph.const_nodes[0].adj_factors.append(new_factor)
+        graph.factors.append(new_factor)
+        factor_id += 1
+        n_edges += 1
+
     graph.n_factor_nodes = factor_id
     graph.n_var_nodes = variable_id
     graph.var_nodes = graph.pose_nodes
     graph.n_edges = n_edges
 
+    graph.init_nodes()
+
     return graph
-
-

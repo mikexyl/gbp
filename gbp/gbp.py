@@ -44,7 +44,7 @@ def kl_divergence_gaussian(p: NdimGaussian, q: NdimGaussian) -> float:
     k = p.dim
 
     cov2_inv = np.linalg.inv(cov2)
-    cov1_inv = np.linalg.inv(cov1)  
+    cov1_inv = np.linalg.inv(cov1)
     det_cov1 = np.linalg.det(cov1)
     det_cov2 = np.linalg.det(cov2)
 
@@ -73,21 +73,28 @@ def contraction(d_last, z1: NdimGaussian, z2: NdimGaussian) -> NdimGaussian:
 
     # compute new lambda
     d_current = kl_divergence_gaussian(z1, z2)
-    print(d_current)
     # print(d_current)
     if d_current < 1e-6:
-        return z2, d_last, 0, d_current
+        print("no change")
+        return z2, d_last, 1, d_current
 
     _dz = dz(z2, z1)
 
+    rate = d_current / d_last
+    gamma = 0.1
+    alpha = 1 / (1 + gamma * rate)
+    
     alpha = 0.9
-    d_reset = 10  # chi2*2
+    d_reset = 4  # chi2*2
     d_target = alpha * d_last
-    print("target ", d_target)
     if d_current <= d_target or d_current > d_reset:
         d_last = d_current
-        print("already contract")
-        return z2, d_current, 0, d_current
+        if d_current<=d_target:
+            print("already converged")
+            return z2, d_current, 1, d_current
+        elif d_current > d_reset:
+            print("reset")
+            return z2, d_current, 0, d_current
 
     Sigma1 = np.linalg.inv(z1.lam)
     Sigmad = np.linalg.inv(_dz.lam)
@@ -109,6 +116,7 @@ def contraction(d_last, z1: NdimGaussian, z2: NdimGaussian) -> NdimGaussian:
     new_lambda = np.linalg.inv(new_Sigma)
     new_mu = mu1 + _lambda * dmu
     new_eta = new_lambda @ new_mu
+    print(f"belief lambda: {_lambda}")
     return (
         NdimGaussian(new_mu.shape[0], new_eta, new_lambda),
         d_target,
@@ -122,16 +130,19 @@ def contract_sigma(d_last, sigma1, sigma2):
 
     d_current = np.linalg.norm(sigma2 - sigma1)
     if d_current < 1e-6:
-        return sigma2, d_last, 0, dsigma
+        print("sigma no change")
+        return sigma2, d_last, 0, d_current
 
     d_target = 0.9 * d_last
     if d_current <= d_target:
+        print("sigma already converged", d_current, d_target)
         d_last = d_current
         return sigma2, d_current, 0, d_current
 
     _lambda = d_target / d_current
-    new_sigma = sigma1 + (sigma2 - sigma1) * _lambda
-    return new_sigma, d_target, 0, d_current
+    print(f"sigma lambda: {_lambda}")
+    new_sigma = sigma1 + (sigma2-sigma1) * _lambda
+    return new_sigma, d_target, _lambda, d_current
 
 
 class FactorGraph:
@@ -369,7 +380,9 @@ class VariableNode:
         # eta=self.prior.eta.copy()
         # lam=self.prior.lam.copy()
         eta = np.zeros(self.dofs)
-        lam = np.eye(self.dofs) 
+        lam = np.eye(self.dofs) * 1e-2
+        # eta=self.belief.eta.copy()
+        # lam=self.belief.lam.copy()
         for i, factor in enumerate(self.adj_factors):
             message_ix = factor.adj_vIDs.index(self.variableID)
             eta_inward, lam_inward = (
@@ -390,14 +403,16 @@ class VariableNode:
         #     sys.exit(1)
 
         new_belief = NdimGaussian(self.dofs, eta, lam)
-
         # Send belief to adjacent factors
         for factor in self.adj_factors:
             belief_ix = factor.adj_vIDs.index(self.variableID)
             factor.adj_beliefs[belief_ix].eta, factor.adj_beliefs[belief_ix].lam = (
-                new_belief.eta,
-                new_belief.lam,
+                new_belief.eta.copy(),
+                new_belief.lam.copy(),
             )
+
+
+
         if self.contraction:
             # check if current belief is valid by checking if self.belief.lam invertable
             old_belief = None
@@ -408,25 +423,32 @@ class VariableNode:
             else:
                 old_belief = copy.deepcopy(self.belief)
 
-            # new_sigma, self.d_sigma, _lambda, d_current = contract_sigma(
-            #     self.d_sigma,
-            #     np.linalg.inv(old_belief.lam),
-            #     np.linalg.inv(new_belief.lam),
-            # )
-            # new_belief.lam = np.linalg.inv(new_sigma)
+            new_sigma, self.d_sigma, _lambda, d_current = contract_sigma(
+                self.d_sigma,
+                np.linalg.inv(old_belief.lam),
+                np.linalg.inv(new_belief.lam),
+            )
+            # # print(f"variable {self.variableID} sigma lambda: {_lambda}, d_current: {d_current}, d_target: {self.d_sigma}")
+            new_mu= new_belief.mu.copy()
+            new_belief.lam = np.linalg.inv(new_sigma)
+            new_belief.eta = new_belief.lam @ new_mu
+
             new_belief, self.d_last, _lambda, d_current = contraction(
                 self.d_last, old_belief, new_belief
             )
-            lam_norm = np.linalg.norm(old_belief.lam)
-            print(
-                f"variable {self.variableID} lambda: {_lambda}, d_current: {d_current}, d_target: {self.d_last}, lam: {lam_norm}"
-            )
+            if _lambda==0:
+                self.d_sigma = np.inf
+                self.d_last = np.inf
 
         if np.any(np.linalg.eigvals(new_belief.lam) < 0):
             print(f"variable {self.variableID} new_belief.lam: {new_belief.lam}")
             raise ValueError("new_belief.lam has negative diagonal elements")
             sys.exit(1)
 
+        # if np.linalg.norm(new_belief.lam) > 1e2:
+        #     self.belief.eta *= 1e-2
+        #     self.belief.lam *= 1e-2
+        # else:
         self.belief.eta = new_belief.eta.copy()
         self.belief.lam = new_belief.lam.copy()
         self.Sigma = np.linalg.inv(self.belief.lam)
@@ -434,11 +456,12 @@ class VariableNode:
 
 
 
-
 class ConstantVariableNode(VariableNode):
     # inherit init from VariableNode
     def __init__(self, variable_id, dofs):
         super().__init__(variable_id, dofs)
+        self.belief.eta = self.prior.eta.copy()
+        self.belief.lam = self.prior.lam.copy()
 
     # override update_belief method to be empty
     def update_belief(self):
@@ -522,18 +545,11 @@ class Factor:
         """
         Computes the squared error using the appropriate loss function.
         """
-        if isinstance(self.adaptive_gauss_noise_var, float):
-            return (
-                0.5
-                * np.linalg.norm(self.compute_residual()) ** 2
-                / self.adaptive_gauss_noise_var
-            )
-        else:
-            r = self.compute_residual()
-            # self.adaptive_gauss_noise_var is a vector of variances for each dimension of the residual
-            assert r.shape[0] == len(self.adaptive_gauss_noise_var)
-            info = np.diag(1 / self.adaptive_gauss_noise_var)
-            return 0.5 * r.T @ np.diag(1 / self.adaptive_gauss_noise_var) @ r
+        r = self.compute_residual()
+        # self.adaptive_gauss_noise_var is a vector of variances for each dimension of the residual
+        assert r.shape[0] == len(self.adaptive_gauss_noise_var)
+        info = np.diag(1 / self.adaptive_gauss_noise_var)
+        return 0.5 * r.T @ np.diag(1 / self.adaptive_gauss_noise_var) @ r
 
     def compute_factor(self, linpoint=None, update_self=True):
         """

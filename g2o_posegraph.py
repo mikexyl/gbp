@@ -20,7 +20,7 @@ np.random.seed(0)
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--g2o_file", default="data/tinyGrid3D.g2o", help="g2o style file with POSE3 data"
+    "--g2o_file", default="data/smallGrid3D.g2o", help="g2o style file with POSE3 data"
 )
 
 parser.add_argument(
@@ -122,6 +122,8 @@ configs = dict(
         "min_linear_iters": args.min_linear_iters,
         "eta_damping": args.eta_damping,
         "prior_std_weaker_factor": args.prior_std_weaker_factor,
+        "prior": args.prior,
+        "contraction": args.contract,
     }
 )
 
@@ -135,34 +137,15 @@ if args.float_implementation:
 graph = gbp_g2o.create_g2o_graph(args.g2o_file, configs)
 graph.save_to_g2o("data/initial.g2o")
 
-if args.prior:
-    print("add prior")
-    const_node = gbp.ConstantVariableNode(9999, 6)
-    const_node.prior.eta = np.zeros(6)
-    const_node.prior.lam = np.eye(6)
-    const_node.belief = copy.deepcopy(const_node.prior)
-    graph.var_nodes.append(const_node)
-
-    prior_factor = gbp.Factor(
-        9999,
-        [graph.var_nodes[-1], graph.var_nodes[0]],
-        np.zeros(6),
-        np.ones(6) * 1e-6,
-        liegroup_displacement.meas_fn,
-        liegroup_displacement.jac_fn,
-        loss=None,
-        mahalanobis_threshold=2,
-    )
-
-    graph.var_nodes[-1].adj_factors.append(prior_factor)
-    graph.var_nodes[0].adj_factors.append(prior_factor)
-    graph.factors.append(prior_factor)
-
 # graph.generate_priors_var(weaker_factor=args.prior_std_weaker_factor)
 graph.update_all_beliefs()
 
 fig = plt.figure()
-ax = fig.add_subplot(111, projection="3d")
+ax = fig.add_subplot(211, projection="3d")
+ax1 = fig.add_subplot(212)
+
+lam_norm_data = []
+
 
 def update(frame):
     ax.clear()
@@ -170,6 +153,7 @@ def update(frame):
     energy = graph.energy()
     print(f"Iteration {frame} // Energy {energy}")
 
+    lam_norm = 0
     for var_node in graph.var_nodes:
         ax.scatter(
             var_node.belief.mu[0],
@@ -178,21 +162,17 @@ def update(frame):
             c="r",
             marker="o",
         )
-        ax.text(
-            var_node.belief.mu[0],
-            var_node.belief.mu[1],
-            var_node.belief.mu[2],
-            f"{var_node.variableID}",
-            fontsize=12,
-        )
-    
-    # set xyz limit to +-2
-    ax.set_xlim(-1, 1)
-    ax.set_ylim(-1, 1)
-    ax.set_zlim(-1, 1)
+ 
+        lam_norm += np.linalg.norm(var_node.belief.lam)
+    lam_norm /= len(graph.var_nodes)
+
+    ax1.clear()
+    lam_norm_data.append(lam_norm)
+    ax1.plot(lam_norm_data)
 
     try:
-        graph.synchronous_iteration(robustify=True, local_relin=True)
+        graph.synchronous_iteration(robustify=False, local_relin=True)
+
     except Exception as e:
         sys.exit(f"Error: {e}")
 
