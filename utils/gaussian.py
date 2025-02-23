@@ -14,3 +14,13 @@ class NdimGaussian:
             self.lam = lam
         else:
             self.lam = np.zeros([self.dim, self.dim])
+    
+    @property
+    def mu(self):
+        return np.linalg.inv(self.lam) @ self.eta
+
+    @property
+    def sigma(self):
+        return np.linalg.inv(self.lam)
+
+
